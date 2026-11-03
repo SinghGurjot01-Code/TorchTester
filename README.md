@@ -4,7 +4,7 @@ A small Android diagnostic app that checks whether the device exposes adjustable
 
 ## Features
 
-- Detects a camera flash and reads the maximum torch strength level.
+- Detects a camera flash (no camera permission needed) and reads the maximum torch strength level.
 - Vertical slider: up increases brightness, down decreases it.
 - Torch on/off control.
 - Displays whether Android exposes adjustable or fixed torch brightness.
