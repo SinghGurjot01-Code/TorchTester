@@ -1,8 +1,6 @@
 package com.gurjot.torchtester
 
-import android.Manifest
 import android.app.Activity
-import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
@@ -10,6 +8,9 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.view.WindowInsets
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -37,11 +38,17 @@ class MainActivity : Activity() {
         window.navigationBarColor = Color.rgb(12, 13, 16)
         cameraManager = getSystemService(CAMERA_SERVICE) as CameraManager
         buildUi()
+        detectTorch()
+        cameraManager.registerTorchCallback(torchCallback, Handler(Looper.getMainLooper()))
+    }
 
-        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            detectTorch()
-        } else {
-            requestPermissions(arrayOf(Manifest.permission.CAMERA), 41)
+    // Keeps UI in sync when the torch is switched off/on by something else
+    private val torchCallback = object : CameraManager.TorchCallback() {
+        override fun onTorchModeChanged(id: String, enabled: Boolean) {
+            if (id != cameraId || enabled == torchOn) return
+            torchOn = enabled
+            toggle.text = if (enabled) "TURN TORCH OFF" else "TURN TORCH ON"
+            if (!enabled) status.text = "Torch off · hardware exposes $maxStrength level(s)"
         }
     }
 
@@ -117,6 +124,13 @@ class MainActivity : Activity() {
             setOnClickListener { toggleTorch() }
         }
         root.addView(toggle, LinearLayout.LayoutParams(-1, dp(54)))
+        root.setOnApplyWindowInsetsListener { v, insets ->
+            if (Build.VERSION.SDK_INT >= 30) {
+                val bars = insets.getInsets(WindowInsets.Type.systemBars())
+                v.setPadding(dp(24), dp(36) + bars.top, dp(24), dp(24) + bars.bottom)
+            }
+            insets
+        }
         setContentView(root)
     }
 
@@ -172,9 +186,12 @@ class MainActivity : Activity() {
                 toggle.text = "TURN TORCH ON"
                 status.text = "Torch off · hardware exposes $maxStrength level(s)"
             } else {
-                cameraManager.setTorchMode(id, true)
+                if (Build.VERSION.SDK_INT >= 33 && maxStrength > 1) {
+                    cameraManager.turnOnTorchWithStrengthLevel(id, strength)
+                } else {
+                    cameraManager.setTorchMode(id, true)
+                }
                 torchOn = true
-                if (maxStrength > 1) applyStrength()
                 toggle.text = "TURN TORCH OFF"
                 status.text = if (maxStrength > 1) "Torch on · slider controls torch strength"
                     else "Torch on · this device exposes fixed brightness"
@@ -190,24 +207,9 @@ class MainActivity : Activity() {
         val id = cameraId ?: return
         if (Build.VERSION.SDK_INT < 33 || maxStrength <= 1) return
         try {
-            cameraManager.setTorchStrengthLevel(id, strength)
+            cameraManager.turnOnTorchWithStrengthLevel(id, strength)
         } catch (e: Exception) {
             status.text = "Strength change rejected: ${e.javaClass.simpleName}"
-        }
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 41 && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-            detectTorch()
-        } else {
-            status.text = "Camera permission is required to control the flash."
-            toggle.isEnabled = false
-            slider.isEnabled = false
         }
     }
 
@@ -218,6 +220,11 @@ class MainActivity : Activity() {
             torchOn = false
             if (::toggle.isInitialized) toggle.text = "TURN TORCH ON"
         }
+    }
+
+    override fun onDestroy() {
+        cameraManager.unregisterTorchCallback(torchCallback)
+        super.onDestroy()
     }
 }
 
@@ -252,13 +259,14 @@ private class VerticalIntensitySlider(context: android.content.Context) : View(c
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!isEnabled) return false
+        parent?.requestDisallowInterceptTouchEvent(true)
         when (event.action) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP -> {
                 val top = 18f
                 val bottom = (height - 18f).coerceAtLeast(top + 1f)
                 val fraction = (1f - ((event.y - top) / (bottom - top))).coerceIn(0f, 1f)
                 val selected = if (maxValue <= 1) 1 else
-                    (1 + fraction * (maxValue - 1)).toInt().coerceIn(1, maxValue)
+                    Math.round(1 + fraction * (maxValue - 1)).coerceIn(1, maxValue)
                 if (selected != value) {
                     value = selected
                     onValueChanged?.invoke(value)
